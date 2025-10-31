@@ -1,14 +1,62 @@
 from ultralytics import YOLO
 import cv2
 import numpy as np
+import requests
+import time
+
+# CCTV API 설정
+API_URL = "https://openapi.its.go.kr:9443/cctvInfo"
+API_KEY = "d2bde6d3d60a41ff8c53799dd603e285"
+
+params = {
+    "apiKey": API_KEY,
+    "type": "its",
+    "cctvType": "1",
+    "minX": 127.20,
+    "maxX": 127.27,
+    "minY": 36.49,
+    "maxY": 36.52,
+    "getType": "json"
+}
+
+def get_latest_cctv_url():
+    """CCTV URL 가져오기"""
+    try:
+        res = requests.get(API_URL, params=params, timeout=5)
+        data = res.json()
+        for item in data.get("response", {}).get("data", []):
+            if "봉안" in item["cctvname"]:
+                print("📡 CCTV:", item["cctvname"])
+                return item["cctvurl"]
+    except Exception as e:
+        print(f"⚠️ URL 가져오기 실패: {e}")
+    return None
+
+# YOLO 모델 로드 (트래킹 기능 포함)
 
 # YOLO 모델 로드 (트래킹 기능 포함)
 model = YOLO("yolov8n.pt")
 
 histories = {}  # track_id별 이동 경로 저장
 
-cap = cv2.VideoCapture("../../data/봉안교차로.mp4")
+# ===== CCTV 스트림으로 변경 =====
+print("🔄 CCTV URL 가져오는 중...")
+cctv_url = get_latest_cctv_url()
+
+if cctv_url is None:
+    print("❌ CCTV URL을 가져올 수 없습니다. 종료합니다.")
+    exit()
+
+cap = cv2.VideoCapture(cctv_url)
+
+# 스트림 설정 최적화
+cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # 버퍼 크기 최소화
+
 fps = cap.get(cv2.CAP_PROP_FPS)
+if fps == 0 or fps > 60:  # 스트림의 경우 FPS가 정확하지 않을 수 있음
+    fps = 25  # 기본값 설정
+
+print(f"✅ CCTV 연결 성공! FPS: {fps}")
 
 # 여러 ROI 영역 설정
 ROI_list = []  # ROI 폴리곤 좌표
@@ -299,9 +347,10 @@ def get_direction_arrow(direction):
         "← Left": "←",
         "↓ Down": "↓",
         "stopped": "●",
-        "unknown": "?"
+        "unknown": "●",
+        "---": "●"
     }
-    return arrows.get(direction, "?")
+    return arrows.get(direction, "●")
 
 
 def get_direction_text(direction):
@@ -312,7 +361,8 @@ def get_direction_text(direction):
         "← Left": "Left",
         "↓ Down": "Down",
         "stopped": "Stop",
-        "unknown": "---"
+        "unknown": "---",
+        "---": "---"
     }
     return direction_map.get(direction, direction)
 
@@ -341,6 +391,10 @@ if not ret:
     print("비디오를 읽을 수 없습니다.")
     exit()
 
+# 🔹 ROI 설정을 위해 화면 크기 조정 (Full HD)
+frame = cv2.resize(frame, (1920, 1080))
+# 또는 원하는 크기로: (1280, 720), (1600, 900) 등
+
 # 여러 ROI 선택
 print("=" * 60)
 print("여러 ROI 영역을 마우스 클릭으로 선택하세요.")
@@ -359,7 +413,8 @@ print("=" * 60)
 temp_frame = frame.copy()
 draw_legend(temp_frame)
 
-cv2.namedWindow("ROI Selection")
+cv2.namedWindow("ROI Selection", cv2.WINDOW_NORMAL)  # 크기 조절 가능한 창
+cv2.setWindowProperty("ROI Selection", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)  # 전체 화면
 cv2.setMouseCallback("ROI Selection", select_roi_callback, {'frame': frame, 'temp_frame': temp_frame})
 
 while not roi_selected:
@@ -521,16 +576,59 @@ cv2.destroyWindow("ROI Selection")
 # 메인 트래킹 루프
 frame_count = 0
 track_roi_mapping = {}  # track_id별로 속한 ROI 인덱스 저장
+last_refresh = time.time()  # URL 갱신 시간 추적
+reconnect_attempts = 0
+max_reconnect_attempts = 3
 
 print("\n트래킹 시작... (ESC 키로 종료)")
 print("트래커: BoT-SORT (Ultralytics 내장)")
 
 while True:
     ret, frame = cap.read()
+    
+    # 프레임 읽기 실패 시 재연결
     if not ret:
-        break
-
+        print("⚠️ 프레임 읽기 실패 → 재연결 시도 중...")
+        reconnect_attempts += 1
+        
+        if reconnect_attempts > max_reconnect_attempts:
+            print(f"❌ {max_reconnect_attempts}회 재연결 실패. 종료합니다.")
+            break
+        
+        cap.release()
+        time.sleep(1)
+        
+        # URL 다시 가져오기
+        cctv_url = get_latest_cctv_url()
+        if cctv_url is None:
+            print("❌ CCTV URL을 가져올 수 없습니다.")
+            continue
+        
+        cap = cv2.VideoCapture(cctv_url)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        last_refresh = time.time()
+        continue
+    
+    # 성공적으로 읽었으면 재연결 카운터 초기화
+    reconnect_attempts = 0
+    
+    # 🔹 10분마다 URL 갱신 (선택사항)
+    if time.time() - last_refresh > 600:  # 600초 = 10분
+        print("♻️ 10분 경과 → URL 갱신 중...")
+        cap.release()
+        cctv_url = get_latest_cctv_url()
+        if cctv_url:
+            cap = cv2.VideoCapture(cctv_url)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        last_refresh = time.time()
+    
     frame_count += 1
+    
+    # 🔹 화면 크기 조절 (원하는 해상도로 조정)
+    frame = cv2.resize(frame, (1920, 1080))  # Full HD
+    # 또는
+    # frame = cv2.resize(frame, (1280, 720))  # HD
+    # frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)  # 50% 축소
 
     # YOLO 트래킹
     results = model.track(
@@ -558,11 +656,11 @@ while True:
                     cv2.circle(frame, pt, 3, color, -1)
 
                 centroid = np.mean(roi_points, axis=0).astype(int)
-                direction_text = ROI_directions[idx]
+                direction_text = ROI_directions[idx]  # "↑ Up" 형식
 
-                # 설정된 방향만 표시
-                dir_text = get_direction_text(direction_text)
-                arrow = get_direction_arrow(direction_text)
+                # 화살표와 텍스트 분리
+                arrow = get_direction_arrow(direction_text)  # "↑" 가져오기
+                dir_text = get_direction_text(direction_text)  # "Up" 가져오기
 
                 cv2.putText(frame, f"ROI {idx + 1}: {arrow} {dir_text}",
                             (centroid[0] - 60, centroid[1]),
@@ -719,9 +817,11 @@ while True:
                     cv2.circle(frame, pt, 3, color, -1)
 
                 centroid = np.mean(roi_points, axis=0).astype(int)
-                direction_text = ROI_directions[idx]
-                dir_text = get_direction_text(direction_text)
-                arrow = get_direction_arrow(direction_text)
+                direction_text = ROI_directions[idx]  # "↑ Up" 형식
+                
+                # 화살표와 텍스트 분리
+                arrow = get_direction_arrow(direction_text)  # "↑" 가져오기
+                dir_text = get_direction_text(direction_text)  # "Up" 가져오기
 
                 cv2.putText(frame, f"ROI {idx + 1}: {arrow} {dir_text}",
                             (centroid[0] - 60, centroid[1]),
@@ -783,9 +883,13 @@ while True:
     cv2.putText(frame, "Left: 135-225° | Right: 315-45°", (legend_x, legend_y + 175),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
 
-    cv2.imshow("SmartCity AI - Direction Tracking", frame)
-
-    if cv2.waitKey(1) == 27:
+    cv2.imshow("SmartCity AI - Direction Tracking (LIVE CCTV)", frame)
+    
+    # 🔹 프레임 레이트 조절 (너무 빠르면 조절)
+    # time.sleep(0.03)  # 약 30fps
+    
+    key = cv2.waitKey(1)
+    if key == 27:  # ESC
         break
 
 cap.release()
