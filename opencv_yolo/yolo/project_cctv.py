@@ -19,7 +19,6 @@ params = {
     "getType": "json"
 }
 
-
 def get_latest_cctv_url():
     """CCTV URL 가져오기"""
     try:
@@ -33,6 +32,7 @@ def get_latest_cctv_url():
         print(f"⚠️ URL 가져오기 실패: {e}")
     return None
 
+# YOLO 모델 로드 (트래킹 기능 포함)
 
 # YOLO 모델 로드 (트래킹 기능 포함)
 model = YOLO("yolov8n.pt")
@@ -367,49 +367,16 @@ def get_direction_text(direction):
     return direction_map.get(direction, direction)
 
 
-def is_wrong_direction(current_dir, roi_dir):
-    """
-    현재 방향이 ROI 설정에 맞지 않는지 확인
+def is_opposite_direction(current_dir, roi_dir):
+    """현재 방향이 ROI 설정 방향의 반대인지 확인"""
+    opposite_pairs = {
+        "→ Right": "← Left",
+        "← Left": "→ Right",
+        "↑ Up": "↓ Down",
+        "↓ Down": "↑ Up"
+    }
 
-    규칙:
-    - ROI Up: Left 무시, Down/Right 경고
-    - ROI Down: Right 무시, Up/Left 경고
-    - ROI Left: Right만 경고
-    - ROI Right: Left만 경고
-    """
-    # stopped나 unknown은 경고하지 않음
-    if current_dir in ["stopped", "unknown", "---"]:
-        return False
-
-    # ROI가 Up인 경우
-    if roi_dir == "↑ Up":
-        # Left는 허용 (좌회전), Down과 Right는 경고
-        if current_dir == "← Left":
-            return False
-        elif current_dir in ["↓ Down", "→ Right"]:
-            return True
-
-    # ROI가 Down인 경우
-    elif roi_dir == "↓ Down":
-        # Right는 허용 (우회전), Up과 Left는 경고
-        if current_dir == "→ Right":
-            return False
-        elif current_dir in ["↑ Up", "← Left"]:
-            return True
-
-    # ROI가 Left인 경우
-    elif roi_dir == "← Left":
-        # 반대 방향(Right)만 경고
-        if current_dir == "→ Right":
-            return True
-
-    # ROI가 Right인 경우
-    elif roi_dir == "→ Right":
-        # 반대 방향(Left)만 경고
-        if current_dir == "← Left":
-            return True
-
-    return False
+    return opposite_pairs.get(roi_dir) == current_dir
 
 
 def get_center(xyxy):
@@ -426,6 +393,7 @@ if not ret:
 
 # 🔹 ROI 설정을 위해 화면 크기 조정 (Full HD)
 frame = cv2.resize(frame, (1920, 1080))
+# 또는 원하는 크기로: (1280, 720), (1600, 900) 등
 
 # 여러 ROI 선택
 print("=" * 60)
@@ -445,8 +413,8 @@ print("=" * 60)
 temp_frame = frame.copy()
 draw_legend(temp_frame)
 
-cv2.namedWindow("ROI Selection", cv2.WINDOW_NORMAL)
-cv2.setWindowProperty("ROI Selection", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+cv2.namedWindow("ROI Selection", cv2.WINDOW_NORMAL)  # 크기 조절 가능한 창
+cv2.setWindowProperty("ROI Selection", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)  # 전체 화면
 cv2.setMouseCallback("ROI Selection", select_roi_callback, {'frame': frame, 'temp_frame': temp_frame})
 
 while not roi_selected:
@@ -512,9 +480,11 @@ while not roi_selected:
         print("현재 ROI 초기화")
 
     elif key in [ord('1'), ord('2'), ord('3'), ord('4')]:
+        # 방향 설정
         current_direction = DIRECTIONS[chr(key)]
         print(f"방향 설정: {current_direction}")
 
+        # 화면 업데이트
         temp_frame = frame.copy()
 
         for idx, roi_points in enumerate(ROI_list):
@@ -605,8 +575,8 @@ cv2.destroyWindow("ROI Selection")
 
 # 메인 트래킹 루프
 frame_count = 0
-track_roi_mapping = {}
-last_refresh = time.time()
+track_roi_mapping = {}  # track_id별로 속한 ROI 인덱스 저장
+last_refresh = time.time()  # URL 갱신 시간 추적
 reconnect_attempts = 0
 max_reconnect_attempts = 3
 
@@ -615,31 +585,35 @@ print("트래커: BoT-SORT (Ultralytics 내장)")
 
 while True:
     ret, frame = cap.read()
-
+    
+    # 프레임 읽기 실패 시 재연결
     if not ret:
         print("⚠️ 프레임 읽기 실패 → 재연결 시도 중...")
         reconnect_attempts += 1
-
+        
         if reconnect_attempts > max_reconnect_attempts:
             print(f"❌ {max_reconnect_attempts}회 재연결 실패. 종료합니다.")
             break
-
+        
         cap.release()
         time.sleep(1)
-
+        
+        # URL 다시 가져오기
         cctv_url = get_latest_cctv_url()
         if cctv_url is None:
             print("❌ CCTV URL을 가져올 수 없습니다.")
             continue
-
+        
         cap = cv2.VideoCapture(cctv_url)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         last_refresh = time.time()
         continue
-
+    
+    # 성공적으로 읽었으면 재연결 카운터 초기화
     reconnect_attempts = 0
-
-    if time.time() - last_refresh > 600:
+    
+    # 🔹 10분마다 URL 갱신 (선택사항)
+    if time.time() - last_refresh > 600:  # 600초 = 10분
         print("♻️ 10분 경과 → URL 갱신 중...")
         cap.release()
         cctv_url = get_latest_cctv_url()
@@ -647,10 +621,16 @@ while True:
             cap = cv2.VideoCapture(cctv_url)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         last_refresh = time.time()
-
+    
     frame_count += 1
-    frame = cv2.resize(frame, (1920, 1080))
+    
+    # 🔹 화면 크기 조절 (원하는 해상도로 조정)
+    frame = cv2.resize(frame, (1920, 1080))  # Full HD
+    # 또는
+    # frame = cv2.resize(frame, (1280, 720))  # HD
+    # frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)  # 50% 축소
 
+    # YOLO 트래킹
     results = model.track(
         frame,
         persist=True,
@@ -660,12 +640,14 @@ while True:
         verbose=False
     )
 
+    # 결과 가져오기
     if results[0].boxes is not None and results[0].boxes.id is not None:
         boxes = results[0].boxes.xyxy.cpu().numpy()
         track_ids = results[0].boxes.id.cpu().numpy().astype(int)
         confidences = results[0].boxes.conf.cpu().numpy()
         classes = results[0].boxes.cls.cpu().numpy().astype(int)
 
+        # 모든 ROI 영역 표시
         for idx, roi_points in enumerate(ROI_list):
             if len(roi_points) >= 3:
                 color = roi_colors[idx % len(roi_colors)]
@@ -674,30 +656,36 @@ while True:
                     cv2.circle(frame, pt, 3, color, -1)
 
                 centroid = np.mean(roi_points, axis=0).astype(int)
-                direction_text = ROI_directions[idx]
+                direction_text = ROI_directions[idx]  # "↑ Up" 형식
 
-                arrow = get_direction_arrow(direction_text)
-                dir_text = get_direction_text(direction_text)
+                # 화살표와 텍스트 분리
+                arrow = get_direction_arrow(direction_text)  # "↑" 가져오기
+                dir_text = get_direction_text(direction_text)  # "Up" 가져오기
 
                 cv2.putText(frame, f"ROI {idx + 1}: {arrow} {dir_text}",
                             (centroid[0] - 60, centroid[1]),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
+        # 각 추적 객체 처리
         active_tracks = 0
 
         for box, track_id, conf, cls in zip(boxes, track_ids, confidences, classes):
             x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
 
+            # 어느 ROI에 속하는지 확인
             roi_idx = get_roi_index_for_bbox((x1, y1, x2, y2), ROI_list)
 
+            # ROI가 설정되어 있는데 어디에도 속하지 않으면 스킵
             if ROI_list and roi_idx is None:
                 continue
 
+            # 트래킹 ID와 ROI 매핑 저장
             if roi_idx is not None:
                 track_roi_mapping[track_id] = roi_idx
 
             cx, cy = get_center((x1, y1, x2, y2))
 
+            # 히스토리 업데이트
             if track_id not in histories:
                 histories[track_id] = []
             histories[track_id].append((cx, cy))
@@ -705,96 +693,122 @@ while True:
             if len(histories[track_id]) > 100:
                 histories[track_id] = histories[track_id][-100:]
 
+            # 속도 분석
             behavior = analyze_speed(histories[track_id], fps)
+
+            # 방향 분석 (더 긴 히스토리와 더 큰 임계값 사용)
             direction, angle = analyze_direction(histories[track_id], min_distance=30)
             arrow = get_direction_arrow(direction)
-            direction_short_text = get_direction_text(direction)
-
+            direction_short_text = get_direction_text(direction)  # 변수명 변경
+            
+            # 이동 벡터 정보
             movement = get_movement_vector(histories[track_id])
-
-            is_wrong_way = False
+            
+            # ROI에 설정된 방향과 비교
+            is_wrong_way = False  # 역주행 여부
             roi_direction_text = "N/A"
 
             if track_id in track_roi_mapping:
                 roi_direction = ROI_directions[track_roi_mapping[track_id]]
                 roi_direction_text = get_direction_text(roi_direction)
 
+                # stopped나 unknown이 아닐 때만 체크
                 if direction != "stopped" and direction != "unknown":
-                    is_wrong_way = is_wrong_direction(direction, roi_direction)
+                    # 반대 방향일 때만 역주행으로 표시
+                    is_wrong_way = is_opposite_direction(direction, roi_direction)
 
+            # *** 색상은 속도 기준으로만 설정 ***
             if behavior == "stopped":
-                color = (255, 255, 0)
+                color = (255, 255, 0)  # 노란색
             elif behavior == "slow":
-                color = (0, 255, 0)
+                color = (0, 255, 0)  # 녹색
             elif behavior == "fast":
-                color = (0, 165, 255)
+                color = (0, 165, 255)  # 주황색
             else:
-                color = (128, 128, 128)
+                color = (128, 128, 128)  # 회색
 
+            # 바운딩 박스 그리기 (역주행이면 두껍게)
             thickness = 3 if is_wrong_way else 2
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
 
+            # ID와 정보 표시 (여러 줄)
             y_offset = max(y1 - 50, 30)
 
+            # 역주행 경고 (반대 방향일 때만, 빨간색 텍스트)
             if is_wrong_way:
                 cv2.putText(frame, f"⚠️ WRONG WAY!",
                             (x1, y_offset),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                 y_offset += 22
 
+            # ID
             cv2.putText(frame, f"ID:{track_id}",
                         (x1, y_offset),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
+            # 속도 정보
             cv2.putText(frame, f"Speed: {behavior}",
                         (x1, y_offset + 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-            cv2.putText(frame, f"Dir: {arrow} {direction_short_text}",
-                        (x1, y_offset + 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
+            # 방향 정보
+            cv2.putText(frame, f"Dir: {arrow} {direction_short_text}", 
+                       (x1, y_offset + 40),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+            # 각도 표시 (디버깅용)
             if direction != "stopped" and direction != "unknown":
-                cv2.putText(frame, f"{angle:.0f}°",
-                            (x1, y_offset + 60),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-
+                cv2.putText(frame, f"{angle:.0f}°", 
+                           (x1, y_offset + 60),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+            
+            # ROI 설정 방향 표시
             if roi_direction_text != "N/A":
-                cv2.putText(frame, f"ROI: {roi_direction_text}",
-                            (x1 + 90, y_offset + 40),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
-
+                cv2.putText(frame, f"ROI: {roi_direction_text}", 
+                           (x1 + 90, y_offset + 40),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+            
+            # 이동 경로 표시 (최근 30개 포인트)
             if len(histories[track_id]) > 1:
                 pts = np.array(histories[track_id][-30:], dtype=np.int32)
 
+                # 그라데이션 효과로 경로 그리기
                 for i in range(1, len(pts)):
-                    alpha = i / len(pts)
-                    thickness_line = int(1 + alpha * 2)
-                    cv2.line(frame, tuple(pts[i - 1]), tuple(pts[i]), color, thickness_line)
-
+                    alpha = i / len(pts)  # 0에서 1로 증가
+                    thickness_line = int(1 + alpha * 2)  # 1에서 3으로 증가
+                    cv2.line(frame, tuple(pts[i-1]), tuple(pts[i]), color, thickness_line)
+                
+                # 이동 방향 화살표 (경로 위에)
                 if len(pts) >= 5 and direction != "stopped" and direction != "unknown":
+                    # 최근 5개 포인트의 평균 방향으로 화살표 그리기
                     recent_pts = pts[-5:]
                     start_pt = tuple(recent_pts[0])
                     end_pt = tuple(recent_pts[-1])
-
-                    dist = np.sqrt((end_pt[0] - start_pt[0]) ** 2 + (end_pt[1] - start_pt[1]) ** 2)
+                    
+                    # 거리가 충분히 크면 화살표 그리기
+                    dist = np.sqrt((end_pt[0]-start_pt[0])**2 + (end_pt[1]-start_pt[1])**2)
                     if dist > 10:
+                        # 역주행이면 빨간색 화살표, 아니면 노란색
                         arrow_color = (0, 0, 255) if is_wrong_way else (0, 255, 255)
                         cv2.arrowedLine(frame, start_pt, end_pt, arrow_color, 4, tipLength=0.4)
-
+            
+            # 이동 벡터 시각화 (중심점에서 큰 화살표)
             if direction != "stopped" and direction != "unknown":
+                # 정규화된 방향 벡터
                 length = 50
                 angle_rad = np.radians(angle)
-
+                
                 end_x = int(cx + length * np.cos(angle_rad))
-                end_y = int(cy - length * np.sin(angle_rad))
-
+                end_y = int(cy - length * np.sin(angle_rad))  # y축 반전
+                
+                # 역주행이면 빨간색, 아니면 밝은 노란색 화살표
                 arrow_color = (0, 0, 255) if is_wrong_way else (0, 255, 255)
-                cv2.arrowedLine(frame, (cx, cy), (end_x, end_y),
-                                arrow_color, 4, tipLength=0.3)
-
+                cv2.arrowedLine(frame, (cx, cy), (end_x, end_y), 
+                               arrow_color, 4, tipLength=0.3)
+            
             active_tracks += 1
     else:
+        # ROI만 표시
         for idx, roi_points in enumerate(ROI_list):
             if len(roi_points) >= 3:
                 color = roi_colors[idx % len(roi_colors)]
@@ -803,16 +817,18 @@ while True:
                     cv2.circle(frame, pt, 3, color, -1)
 
                 centroid = np.mean(roi_points, axis=0).astype(int)
-                direction_text = ROI_directions[idx]
-
-                arrow = get_direction_arrow(direction_text)
-                dir_text = get_direction_text(direction_text)
+                direction_text = ROI_directions[idx]  # "↑ Up" 형식
+                
+                # 화살표와 텍스트 분리
+                arrow = get_direction_arrow(direction_text)  # "↑" 가져오기
+                dir_text = get_direction_text(direction_text)  # "Up" 가져오기
 
                 cv2.putText(frame, f"ROI {idx + 1}: {arrow} {dir_text}",
                             (centroid[0] - 60, centroid[1]),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
         active_tracks = 0
 
+    # 정보 표시
     cv2.putText(frame, f"Tracks: {active_tracks}", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
     cv2.putText(frame, f"ROIs: {len(ROI_list)}", (10, 60),
@@ -820,18 +836,22 @@ while True:
     cv2.putText(frame, f"Frame: {frame_count}", (10, 90),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
+    # 범례 (화면 오른쪽 하단)
     legend_x = frame.shape[1] - 230
     legend_y = frame.shape[0] - 180
 
+    # 반투명 배경
     overlay = frame.copy()
     cv2.rectangle(overlay, (legend_x - 10, legend_y - 30),
                   (frame.shape[1] - 10, frame.shape[0] - 10),
                   (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
 
+    # 제목
     cv2.putText(frame, "=== Legend ===", (legend_x, legend_y),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
 
+    # 속도 색상 범례
     cv2.putText(frame, "Speed Colors:", (legend_x, legend_y + 25),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
     cv2.rectangle(frame, (legend_x, legend_y + 30), (legend_x + 15, legend_y + 42),
@@ -849,6 +869,7 @@ while True:
     cv2.putText(frame, "Fast", (legend_x + 20, legend_y + 78),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
+    # 방향 정보
     cv2.putText(frame, "Direction Arrows:", (legend_x, legend_y + 100),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
     cv2.putText(frame, "Yellow: Normal", (legend_x, legend_y + 120),
@@ -856,15 +877,19 @@ while True:
     cv2.putText(frame, "Red: Wrong Way", (legend_x, legend_y + 138),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
 
+    # 방향 기준
     cv2.putText(frame, "Up: 45-135° | Down: 225-315°", (legend_x, legend_y + 160),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
     cv2.putText(frame, "Left: 135-225° | Right: 315-45°", (legend_x, legend_y + 175),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
 
     cv2.imshow("SmartCity AI - Direction Tracking (LIVE CCTV)", frame)
-
+    
+    # 🔹 프레임 레이트 조절 (너무 빠르면 조절)
+    # time.sleep(0.03)  # 약 30fps
+    
     key = cv2.waitKey(1)
-    if key == 27:
+    if key == 27:  # ESC
         break
 
 cap.release()
