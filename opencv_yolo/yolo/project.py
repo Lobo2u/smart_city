@@ -6,7 +6,7 @@ import time
 
 # CCTV API 설정
 API_URL = "https://openapi.its.go.kr:9443/cctvInfo"
-API_KEY = "d2bde6d3d60a41ff8c53799dd603e285"
+API_KEY = {{SECRET_KEY}}
 
 params = {
     "apiKey": API_KEY,
