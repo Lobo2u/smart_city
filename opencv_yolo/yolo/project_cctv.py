@@ -3,10 +3,13 @@ import cv2
 import numpy as np
 import requests
 import time
+from dotenv import load_dotenv
+load_dotenv()
 
 # CCTV API 설정
-API_URL = "https://openapi.its.go.kr:9443/cctvInfo"
-API_KEY = "d2bde6d3d60a41ff8c53799dd603e285"
+
+API_URL = os.getenv("API_URL")
+API_KEY = os.getenv("API_KEY")
 
 params = {
     "apiKey": API_KEY,
